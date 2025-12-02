@@ -16,6 +16,8 @@ export class LiveSessionService {
   private source: MediaStreamAudioSourceNode | null = null;
   private sessionPromise: Promise<any> | null = null;
   private isActive = false;
+  private mediaRecorder: MediaRecorder | null = null;
+  private audioChunks: Blob[] = [];
 
   constructor(apiKey: string) {
     this.client = new GoogleGenAI({ apiKey });
@@ -24,6 +26,8 @@ export class LiveSessionService {
   public async connect(callbacks: LiveSessionCallbacks) {
     try {
       this.isActive = true;
+      this.audioChunks = [];
+      
       // 1. Create Audio Context with 16kHz sample rate (preferred by Gemini)
       this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
         sampleRate: 16000, 
@@ -42,14 +46,26 @@ export class LiveSessionService {
           noiseSuppression: true,
         } 
       });
+
+      // 3. Setup MediaRecorder for local playback
+      this.mediaRecorder = new MediaRecorder(this.mediaStream);
+      this.mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) this.audioChunks.push(e.data);
+      };
+      this.mediaRecorder.start();
       
       this.sessionPromise = this.client.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         config: {
           responseModalities: [Modality.AUDIO], 
           inputAudioTranscription: {}, 
-          // 3. Precise System Instruction
-          systemInstruction: "You are a professional, verbatim transcriptionist. Your sole task is to accurately transcribe the speaker's presentation word-for-word. Capture technical terms accurately. Do not summarize. Do not reply to the content. Do not generate spoken audio responses, just listen and transcribe.",
+          // 4. Precise System Instruction to prevent model from speaking
+          systemInstruction: {
+            parts: [{ text: "You are a passive listener and transcriptionist. Your sole task is to receive audio and provide accurate transcriptions via the inputAudioTranscription events. Do NOT generate any spoken audio responses. Do NOT reply to the content. Maintain complete silence." }]
+          },
+          speechConfig: {
+             voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } }
+          }
         },
         callbacks: {
           onopen: () => {
@@ -109,7 +125,7 @@ export class LiveSessionService {
   private startAudioStreaming() {
     if (!this.audioContext || !this.mediaStream) return;
 
-    // 4. Reduced buffer size to 2048 for lower latency (approx 128ms at 16k)
+    // Reduced buffer size for lower latency
     this.processor = this.audioContext.createScriptProcessor(2048, 1, 1);
     this.processor.onaudioprocess = (e) => {
       const inputData = e.inputBuffer.getChannelData(0);
@@ -128,8 +144,15 @@ export class LiveSessionService {
     }
   }
 
-  public disconnect() {
+  public async disconnect(): Promise<Blob | null> {
     this.isActive = false;
+    
+    // Stop MediaRecorder and collect blob
+    let audioBlob: Blob | null = null;
+    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+        this.mediaRecorder.stop();
+        audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
+    }
     
     if (this.mediaStream) {
       this.mediaStream.getTracks().forEach(track => track.stop());
@@ -158,13 +181,14 @@ export class LiveSessionService {
     }
     
     this.sessionPromise = null;
+    return audioBlob;
   }
 
   private createBlob(data: Float32Array) {
     const l = data.length;
     const int16 = new Int16Array(l);
     for (let i = 0; i < l; i++) {
-      // 5. Clamping: Important to prevent integer overflow distortion for loud audio
+      // Clamping: Important to prevent integer overflow distortion for loud audio
       const clamped = Math.max(-1, Math.min(1, data[i]));
       int16[i] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7FFF;
     }

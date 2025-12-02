@@ -17,6 +17,7 @@ const App: React.FC = () => {
   const [transcript, setTranscript] = useState<string>('');
   const [volume, setVolume] = useState<number>(0);
   const [gradingResult, setGradingResult] = useState<GradingResult | null>(null);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
   
   // Refs for services and state that doesn't trigger re-renders but needs persistence
   const liveSessionRef = useRef<LiveSessionService | null>(null);
@@ -35,6 +36,7 @@ const App: React.FC = () => {
 
     setAppState(AppState.LISTENING);
     setTranscript('');
+    setAudioUrl(null);
     transcriptRef.current = '';
     
     const service = new LiveSessionService(process.env.API_KEY);
@@ -52,17 +54,11 @@ const App: React.FC = () => {
 
             let needsSpace = false;
             if (currentText.length > 0) {
-                // If both are CJK, no space. 
-                // If one is CJK and other isn't, maybe space? Usually yes for "Text中文" but "中文Text" is also common.
-                // Standard: Space between English words. No space between CJK characters.
                 if (isCJK(lastChar) && isCJK(firstChar)) {
                     needsSpace = false;
                 } else if (!isCJK(lastChar) && !isCJK(firstChar)) {
-                     // Both non-CJK (likely English), need space if not punctuation
                      needsSpace = !/^[.,!?;:]/.test(firstChar);
                 } else {
-                    // CJK <-> English boundary. Add space for readability usually, 
-                    // though strictly not required. Let's add it for clarity.
                     needsSpace = true;
                 }
             }
@@ -85,18 +81,26 @@ const App: React.FC = () => {
   };
 
   const handleStop = async () => {
+    let recordedBlob: Blob | null = null;
+    
     if (liveSessionRef.current) {
-        liveSessionRef.current.disconnect();
+        recordedBlob = await liveSessionRef.current.disconnect();
     }
+    
+    if (recordedBlob) {
+        const url = URL.createObjectURL(recordedBlob);
+        setAudioUrl(url);
+    }
+
     setAppState(AppState.ANALYZING);
 
     try {
         const rubric = rubrics.find(r => r.id === selectedRubricId) || rubrics[0];
         
         let finalTranscript = transcriptRef.current;
-        if (finalTranscript.length < 10) {
+        if (finalTranscript.length < 5) {
+           // Fallback for demo if no audio was transcribed
            console.warn("Transcript too short.");
-           // We allow shorter transcripts now but warn
         }
 
         const result = await gradePresentation(finalTranscript, rubric, process.env.API_KEY || '');
@@ -119,6 +123,7 @@ const App: React.FC = () => {
     setAppState(AppState.IDLE);
     setTranscript('');
     setGradingResult(null);
+    setAudioUrl(null);
     transcriptRef.current = '';
     setVolume(0);
   };
@@ -130,7 +135,7 @@ const App: React.FC = () => {
         <p className="text-slate-500">Real-time transcription and AI-powered grading rubric.</p>
       </header>
 
-      <main className="w-full max-w-4xl relative">
+      <main className="w-full max-w-5xl relative">
         
         {/* IDLE STATE: Selection */}
         {appState === AppState.IDLE && (
@@ -161,11 +166,10 @@ const App: React.FC = () => {
             <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-200">
                 <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                     <div className="flex items-center space-x-2">
-                        <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></div>
+                        <div className="w-3 h-3 rounded-full bg-red-500 animate-pulse"></div>
                         <span className="font-semibold text-slate-700">Recording in progress...</span>
                     </div>
                     <div className="text-sm text-slate-400 font-mono">
-                         {/* Simple character count for CJK, word count for others roughly */}
                         {transcript.length > 0 ? transcript.length : 0} chars
                     </div>
                 </div>
@@ -174,16 +178,18 @@ const App: React.FC = () => {
                 <Visualizer volume={volume} isListening={true} />
                 
                 {/* Live Transcript Area */}
-                <div className="p-6 h-64 overflow-y-auto bg-white">
+                <div className="p-6 h-64 overflow-y-auto bg-white scroll-smooth">
                     {transcript ? (
                         <p className="text-lg text-slate-700 leading-relaxed font-medium">
                             {transcript}
                             <span className="inline-block w-2 h-5 ml-1 bg-indigo-500 animate-pulse align-middle"></span>
                         </p>
                     ) : (
-                        <p className="text-slate-400 italic text-center mt-20">Start speaking to see transcription...</p>
+                        <div className="flex flex-col items-center justify-center h-full text-slate-400">
+                            <Mic className="w-8 h-8 mb-2 opacity-50" />
+                            <p className="italic">Start speaking...</p>
+                        </div>
                     )}
-                    {/* Auto-scroll anchor */}
                     <div ref={(el) => el?.scrollIntoView({ behavior: 'smooth' })} />
                 </div>
             </div>
@@ -205,31 +211,38 @@ const App: React.FC = () => {
             <div className="flex flex-col items-center justify-center h-96 animate-in fade-in duration-500">
                 <div className="relative">
                     <div className="absolute inset-0 bg-indigo-200 rounded-full animate-ping opacity-25"></div>
-                    <div className="bg-white p-4 rounded-full shadow-lg relative z-10">
+                    <div className="bg-white p-6 rounded-full shadow-lg relative z-10">
                         <Loader2 className="w-12 h-12 text-indigo-600 animate-spin" />
                     </div>
                 </div>
                 <h3 className="mt-8 text-2xl font-bold text-slate-800">Analyzing Performance</h3>
-                <p className="text-slate-500 mt-2">Checking rubric criteria and generating feedback...</p>
+                <p className="text-slate-500 mt-2 max-w-md text-center">
+                    Checking rubric criteria, evaluating delivery, and generating feedback...
+                </p>
             </div>
         )}
 
         {/* RESULTS STATE */}
         {appState === AppState.RESULTS && gradingResult && (
-            <GradingReport result={gradingResult} onReset={resetApp} />
+            <GradingReport 
+                result={gradingResult} 
+                onReset={resetApp} 
+                audioUrl={audioUrl}
+                transcript={transcript}
+            />
         )}
 
         {/* ERROR STATE */}
         {appState === AppState.ERROR && (
-             <div className="text-center mt-20">
+             <div className="text-center mt-20 p-8 bg-white rounded-2xl shadow-sm border border-slate-200 max-w-md mx-auto">
                 <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-red-100 mb-6">
-                    <span className="text-red-600 text-2xl">!</span>
+                    <span className="text-red-600 text-2xl font-bold">!</span>
                 </div>
                 <h2 className="text-2xl font-bold text-slate-800 mb-2">Something went wrong</h2>
                 <p className="text-slate-500 mb-8">We couldn't process your request. Please check your API key and connection.</p>
                 <button 
                     onClick={resetApp}
-                    className="px-6 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-900"
+                    className="px-6 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-900 transition-colors"
                 >
                     Try Again
                 </button>
