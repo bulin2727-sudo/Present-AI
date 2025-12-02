@@ -1,5 +1,5 @@
 {
-  "name": "Copy of PresentAI - Real-time Presentation Coach",
+  "name": "PresentAI - Real-time Presentation Coach",
   "description": "Real-time audio transcription and AI-powered rubric grading for student presentations.",
   "requestFramePermissions": [
     "microphone"
