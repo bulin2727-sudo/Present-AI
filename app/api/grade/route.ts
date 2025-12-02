@@ -6,7 +6,7 @@ import { Buffer } from "buffer";
 export async function POST(req: NextRequest) {
   try {
     // Securely access API Key from server environment variables
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = process.env.API_KEY;
     if (!apiKey) {
       return NextResponse.json({ error: "Server misconfiguration: API Key missing" }, { status: 500 });
     }
